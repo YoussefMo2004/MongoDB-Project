@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from bson import ObjectId
 
 try:
     from pymongo import MongoClient
@@ -141,6 +142,235 @@ def load_mongo_data(uri: str, db_name: str) -> dict[str, pd.DataFrame]:
         "semesters": normalize_semesters(list(db.semesters.find({}))),
         "enrollments": normalize_enrollments(list(db.enrollments.find({}))),
     }
+
+
+def get_session_data() -> dict[str, pd.DataFrame]:
+    if "editable_data" not in st.session_state:
+        st.session_state.editable_data = load_sample_data()
+    return st.session_state.editable_data
+
+
+def set_session_data(data: dict[str, pd.DataFrame]) -> None:
+    st.session_state.editable_data = data
+
+
+def get_current_data(source: str, uri: str, db_name: str) -> dict[str, pd.DataFrame]:
+    if source == "MongoDB":
+        return get_data(source, uri, db_name)
+    return get_session_data()
+
+
+def build_empty_document(collection: str) -> dict[str, Any]:
+    if collection == "students":
+        return {"student_id": "", "name": "", "email": "", "department": "", "gpa": 0.0, "street": "", "city": "", "state": ""}
+    if collection == "courses":
+        return {"course_code": "", "title": "", "department": "", "credits": 3}
+    if collection == "semesters":
+        return {"semester_code": "", "year": 2026, "term": "Fall"}
+    if collection == "enrollments":
+        return {"student_ref": "", "course_ref": "", "semester_ref": "", "status": "enrolled", "grade": "", "grade_point": 0.0}
+    raise ValueError(f"Unsupported collection: {collection}")
+
+
+def make_new_id() -> str:
+    return str(ObjectId())
+
+
+def add_record_to_data(data: dict[str, pd.DataFrame], collection: str, record: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    updated_data = {name: frame.copy() for name, frame in data.items()}
+    frame = updated_data[collection]
+    row = pd.DataFrame([record])
+    updated_data[collection] = pd.concat([frame, row], ignore_index=True)
+    return updated_data
+
+
+def delete_record_from_data(data: dict[str, pd.DataFrame], collection: str, record_id: str) -> dict[str, pd.DataFrame]:
+    updated_data = {name: frame.copy() for name, frame in data.items()}
+    frame = updated_data[collection]
+    updated_data[collection] = frame.loc[frame["_id"].astype(str) != str(record_id)].reset_index(drop=True)
+    if collection != "enrollments":
+        related_map = {
+            "students": ["enrollments"],
+            "courses": ["enrollments"],
+            "semesters": ["enrollments"],
+        }
+        related_refs = {
+            "students": ("student_ref", record_id),
+            "courses": ("course_ref", record_id),
+            "semesters": ("semester_ref", record_id),
+        }
+        for related_collection in related_map.get(collection, []):
+            ref_column, ref_value = related_refs[collection]
+            related_frame = updated_data[related_collection]
+            updated_data[related_collection] = related_frame.loc[related_frame[ref_column].astype(str) != str(ref_value)].reset_index(drop=True)
+    return updated_data
+
+
+def upsert_mongo_record(uri: str, db_name: str, collection: str, record: dict[str, Any]) -> None:
+    if MongoClient is None:
+        raise RuntimeError("pymongo is not installed.")
+
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    db = client[db_name]
+    db[collection].insert_one(record)
+
+
+def delete_mongo_record(uri: str, db_name: str, collection: str, record_id: str) -> None:
+    if MongoClient is None:
+        raise RuntimeError("pymongo is not installed.")
+
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    db = client[db_name]
+    db[collection].delete_one({"_id": record_id})
+
+
+def refresh_data_after_write(source: str) -> None:
+    if source == "MongoDB":
+        get_data.clear()
+    else:
+        st.session_state.editable_data = load_sample_data()
+
+
+def collection_display_name(collection: str) -> str:
+    return {
+        "students": "Students",
+        "courses": "Courses",
+        "semesters": "Semesters",
+        "enrollments": "Enrollments",
+    }[collection]
+
+
+def collection_choices(data: dict[str, pd.DataFrame], collection: str) -> list[tuple[str, str]]:
+    frame = data[collection]
+    if frame.empty:
+        return []
+
+    if collection == "students":
+        return [(row["_id"], f'{row["student_id"]} - {row["name"]}') for _, row in frame.iterrows()]
+    if collection == "courses":
+        return [(row["_id"], f'{row["course_code"]} - {row["title"]}') for _, row in frame.iterrows()]
+    if collection == "semesters":
+        return [(row["_id"], f'{row["semester_code"]} - {row["term"]} {row["year"]}') for _, row in frame.iterrows()]
+    return [(row["_id"], f'{row["_id"]} | {row["status"]} | {row["grade"]}') for _, row in frame.iterrows()]
+
+
+def add_record(source: str, uri: str, db_name: str, data: dict[str, pd.DataFrame], collection: str, record: dict[str, Any]) -> None:
+    if source == "MongoDB":
+        upsert_mongo_record(uri, db_name, collection, record)
+        refresh_data_after_write(source)
+    else:
+        set_session_data(add_record_to_data(data, collection, record))
+
+
+def delete_record(source: str, uri: str, db_name: str, data: dict[str, pd.DataFrame], collection: str, record_id: str) -> None:
+    if source == "MongoDB":
+        if collection == "students":
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            db = client[db_name]
+            db.enrollments.delete_many({"student_ref": record_id})
+            db.students.delete_one({"_id": record_id})
+        elif collection == "courses":
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            db = client[db_name]
+            db.enrollments.delete_many({"course_ref": record_id})
+            db.courses.delete_one({"_id": record_id})
+        elif collection == "semesters":
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            db = client[db_name]
+            db.enrollments.delete_many({"semester_ref": record_id})
+            db.semesters.delete_one({"_id": record_id})
+        else:
+            delete_mongo_record(uri, db_name, collection, record_id)
+        refresh_data_after_write(source)
+    else:
+        set_session_data(delete_record_from_data(data, collection, record_id))
+
+
+def render_manage_tab(source: str, uri: str, db_name: str, data: dict[str, pd.DataFrame]) -> None:
+    st.subheader("Data Management")
+    st.caption("Add or delete records. Sample data changes stay in your current session; MongoDB changes are written to Atlas.")
+
+    collection = st.selectbox("Collection", ["students", "courses", "semesters", "enrollments"], format_func=collection_display_name)
+    current_data = data[collection]
+
+    left, right = st.columns([1.1, 1])
+
+    with left:
+        st.markdown(f"#### Add {collection_display_name(collection)[:-1]}")
+        with st.form(f"add-{collection}"):
+            new_record: dict[str, Any] = {"_id": make_new_id()}
+
+            if collection == "students":
+                new_record["student_id"] = st.text_input("Student ID", value="")
+                new_record["name"] = st.text_input("Name", value="")
+                new_record["email"] = st.text_input("Email", value="")
+                new_record["department"] = st.text_input("Department", value="")
+                new_record["gpa"] = st.number_input("GPA", min_value=0.0, max_value=4.0, value=0.0, step=0.01)
+                new_record["street"] = st.text_input("Street", value="")
+                new_record["city"] = st.text_input("City", value="")
+                new_record["state"] = st.text_input("State", value="")
+            elif collection == "courses":
+                new_record["course_code"] = st.text_input("Course code", value="")
+                new_record["title"] = st.text_input("Title", value="")
+                new_record["department"] = st.text_input("Department", value="")
+                new_record["credits"] = st.number_input("Credits", min_value=1, max_value=12, value=3, step=1)
+            elif collection == "semesters":
+                new_record["semester_code"] = st.text_input("Semester code", value="")
+                new_record["year"] = st.number_input("Year", min_value=2000, max_value=2100, value=2026, step=1)
+                new_record["term"] = st.selectbox("Term", ["Fall", "Spring", "Summer", "Winter"])
+            else:
+                student_options = collection_choices(data, "students")
+                course_options = collection_choices(data, "courses")
+                semester_options = collection_choices(data, "semesters")
+                if not student_options or not course_options or not semester_options:
+                    st.info("Add students, courses, and semesters before creating enrollments.")
+                else:
+                    student_labels = {record_id: label for record_id, label in student_options}
+                    course_labels = {record_id: label for record_id, label in course_options}
+                    semester_labels = {record_id: label for record_id, label in semester_options}
+                    new_record["student_ref"] = st.selectbox("Student", [record_id for record_id, _ in student_options], format_func=lambda record_id: student_labels[record_id])
+                    new_record["course_ref"] = st.selectbox("Course", [record_id for record_id, _ in course_options], format_func=lambda record_id: course_labels[record_id])
+                    new_record["semester_ref"] = st.selectbox("Semester", [record_id for record_id, _ in semester_options], format_func=lambda record_id: semester_labels[record_id])
+                    new_record["status"] = st.selectbox("Status", ["enrolled", "completed", "dropped"])
+                    new_record["grade"] = st.text_input("Grade", value="")
+                    new_record["grade_point"] = st.number_input("Grade point", min_value=0.0, max_value=4.0, value=0.0, step=0.1)
+
+            submitted = st.form_submit_button("Add record")
+
+        if submitted:
+            missing_fields = [key for key, value in new_record.items() if key != "_id" and value in (None, "")]
+            if collection == "enrollments" and (
+                not collection_choices(data, "students")
+                or not collection_choices(data, "courses")
+                or not collection_choices(data, "semesters")
+            ):
+                st.warning("Create the related student, course, and semester records first.")
+            elif missing_fields:
+                st.warning("Fill in all required fields before saving.")
+            else:
+                try:
+                    add_record(source, uri, db_name, data, collection, new_record)
+                    st.success(f"Added a new {collection_display_name(collection)[:-1].lower()} record.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not add record: {exc}")
+
+    with right:
+        st.markdown(f"#### Delete {collection_display_name(collection)[:-1]}")
+        if current_data.empty:
+            st.info("No records available to delete.")
+        else:
+            choices = collection_choices(data, collection)
+            choice_map = {record_id: label for record_id, label in choices}
+            selected_record_id = st.selectbox("Select a record", [record_id for record_id, _ in choices], format_func=lambda record_id: choice_map[record_id])
+            confirm_delete = st.checkbox("I understand this will remove the selected record.")
+            if st.button("Delete record", type="primary", disabled=not confirm_delete):
+                try:
+                    delete_record(source, uri, db_name, data, collection, selected_record_id)
+                    st.success("Record deleted.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not delete record: {exc}")
 
 
 @st.cache_data(show_spinner=False)
@@ -293,13 +523,15 @@ mongo_uri = st.sidebar.text_input("MongoDB URI", value=os.getenv("MONGODB_URI", 
 mongo_db = st.sidebar.text_input("Database name", value=os.getenv("MONGODB_DB", DB_NAME))
 
 try:
-    data = get_data(source, mongo_uri, mongo_db)
+    data = get_current_data(source, mongo_uri, mongo_db)
     connection_message = "Loaded sample academic data." if source == "Sample data" else f"Connected to {mongo_db} at {mongo_uri}."
     connection_status = "success"
 except Exception as exc:  # pragma: no cover - surfaced in Streamlit UI
-    data = load_sample_data()
+    data = get_session_data()
     connection_message = f"MongoDB unavailable, so the app is showing sample data instead: {exc}"
     connection_status = "warning"
+
+active_source = source if connection_status == "success" else "Sample data"
 
 if connection_status == "success":
     st.sidebar.success(connection_message)
@@ -325,7 +557,7 @@ render_metric_cards(
     ]
 )
 
-tabs = st.tabs(["Dashboard", "Students", "Transcript", "Courses", "Analytics"])
+tabs = st.tabs(["Dashboard", "Students", "Transcript", "Courses", "Analytics", "Manage Data"])
 
 with tabs[0]:
     st.subheader("Institution Overview")
@@ -433,5 +665,8 @@ with tabs[4]:
     else:
         st.dataframe(course_stats, use_container_width=True, hide_index=True)
         st.bar_chart(course_stats.set_index("course_code")[["student_count"]], height=240)
+
+with tabs[5]:
+    render_manage_tab(active_source, mongo_uri, mongo_db, data)
 
 st.caption("Academic Records Streamlit app built on top of the MongoDB academic schema.")

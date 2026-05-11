@@ -1,0 +1,1 @@
+Add a MongoDB Compass screenshot named compass_view.png here showing a sample document view (students or enrollments). Place the PNG at this path: screenshots/compass_view.png

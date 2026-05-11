@@ -151,7 +151,8 @@ def get_data(source: str, uri: str, db_name: str) -> dict[str, pd.DataFrame]:
 
 
 def add_quality_points(enrollments: pd.DataFrame, courses: pd.DataFrame) -> pd.DataFrame:
-    enriched = enrollments.merge(courses[["_id", "credits", "course_code", "title"]], left_on="course_ref", right_on="_id", how="left")
+    course_lookup = courses[["_id", "credits", "course_code", "title"]].rename(columns={"_id": "course_lookup_id"})
+    enriched = enrollments.merge(course_lookup, left_on="course_ref", right_on="course_lookup_id", how="left")
     enriched["quality_points"] = enriched["grade_point"] * enriched["credits"]
     return enriched
 
@@ -162,7 +163,8 @@ def build_transcript(student_id: str, data: dict[str, pd.DataFrame]) -> pd.DataF
         return pd.DataFrame(columns=["semester_code", "course_code", "course_title", "credits", "grade", "grade_point", "status"])
 
     enriched = add_quality_points(enrollments, data["courses"])
-    enriched = enriched.merge(data["semesters"][["_id", "semester_code", "year", "term"]], left_on="semester_ref", right_on="_id", how="left")
+    semester_lookup = data["semesters"][["_id", "semester_code", "year", "term"]].rename(columns={"_id": "semester_lookup_id"})
+    enriched = enriched.merge(semester_lookup, left_on="semester_ref", right_on="semester_lookup_id", how="left")
     enriched = enriched.sort_values(["year", "semester_code", "course_code"], na_position="last")
     return enriched[["semester_code", "course_code", "title", "credits", "grade", "grade_point", "status"]].rename(columns={"title": "course_title"})
 
@@ -177,8 +179,10 @@ def build_semester_gpa(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
         .agg(total_points=("quality_points", "sum"), total_credits=("credits", "sum"))
     )
     semester_gpa["semester_gpa"] = (semester_gpa["total_points"] / semester_gpa["total_credits"]).round(2)
-    semester_gpa = semester_gpa.merge(data["students"][["_id", "student_id", "name", "department"]], left_on="student_ref", right_on="_id", how="left")
-    semester_gpa = semester_gpa.merge(data["semesters"][["_id", "semester_code", "year", "term"]], left_on="semester_ref", right_on="_id", how="left")
+    student_lookup = data["students"][["_id", "student_id", "name", "department"]].rename(columns={"_id": "student_lookup_id"})
+    semester_gpa = semester_gpa.merge(student_lookup, left_on="student_ref", right_on="student_lookup_id", how="left")
+    semester_lookup = data["semesters"][["_id", "semester_code", "year", "term"]].rename(columns={"_id": "semester_lookup_id"})
+    semester_gpa = semester_gpa.merge(semester_lookup, left_on="semester_ref", right_on="semester_lookup_id", how="left")
     return semester_gpa[["student_id", "name", "department", "semester_code", "year", "term", "semester_gpa"]].sort_values(["semester_code", "semester_gpa"], ascending=[True, False])
 
 
@@ -206,7 +210,8 @@ def build_top_students(data: dict[str, pd.DataFrame], limit: int = 5) -> pd.Data
         .agg(total_points=("quality_points", "sum"), total_credits=("credits", "sum"))
     )
     top_students["cumulative_gpa"] = (top_students["total_points"] / top_students["total_credits"]).round(2)
-    top_students = top_students.merge(data["students"][["_id", "student_id", "name", "department"]], left_on="student_ref", right_on="_id", how="left")
+    student_lookup = data["students"][["_id", "student_id", "name", "department"]].rename(columns={"_id": "student_lookup_id"})
+    top_students = top_students.merge(student_lookup, left_on="student_ref", right_on="student_lookup_id", how="left")
     return top_students[["student_id", "name", "department", "cumulative_gpa"]].sort_values("cumulative_gpa", ascending=False).head(limit)
 
 
@@ -221,8 +226,10 @@ def build_department_summary(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def build_enrollment_view(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
     enriched = add_quality_points(data["enrollments"], data["courses"])
-    enriched = enriched.merge(data["students"][["_id", "student_id", "name", "department"]], left_on="student_ref", right_on="_id", how="left")
-    enriched = enriched.merge(data["semesters"][["_id", "semester_code", "year", "term"]], left_on="semester_ref", right_on="_id", how="left")
+    student_lookup = data["students"][["_id", "student_id", "name", "department"]].rename(columns={"_id": "student_lookup_id"})
+    semester_lookup = data["semesters"][["_id", "semester_code", "year", "term"]].rename(columns={"_id": "semester_lookup_id"})
+    enriched = enriched.merge(student_lookup, left_on="student_ref", right_on="student_lookup_id", how="left")
+    enriched = enriched.merge(semester_lookup, left_on="semester_ref", right_on="semester_lookup_id", how="left")
     return enriched[["student_id", "name", "department", "semester_code", "course_code", "title", "status", "grade", "grade_point", "credits"]].rename(columns={"title": "course_title"})
 
 

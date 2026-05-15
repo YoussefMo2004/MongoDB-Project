@@ -500,8 +500,8 @@ st.markdown(
         padding: 0.95rem 1rem;
         min-height: 92px;
     }
-    .metric-label { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; color: #475569; }
-    .metric-value { margin-top: 0.35rem; font-size: 1.8rem; font-weight: 700; color: #0f172a; }
+    .metric-label { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.7; }
+    .metric-value { margin-top: 0.35rem; font-size: 1.8rem; font-weight: 700; }
     </style>
     """,
     unsafe_allow_html=True,
